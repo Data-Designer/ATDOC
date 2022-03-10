@@ -39,7 +39,7 @@ class CrossEntropyLabelSmooth(nn.Module):
         if self.reduction:
             return loss.mean()
         else:
-            return loss
+            return loss # B,1
 
 class MMD_loss(nn.Module):
     def __init__(self, kernel_type='rbf', kernel_mul=2.0, kernel_num=5):
@@ -97,6 +97,7 @@ def bsp_loss(feature):
     return sigma
 
 def Entropy(input_):
+    """计算输出表征的熵值"""
     bs = input_.size(0)
     epsilon = 1e-5
     entropy = -input_ * torch.log(input_ + epsilon)

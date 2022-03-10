@@ -28,7 +28,7 @@ def data_load(args):
         torchvision.transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    source_set = utils.ObjectImage('', args.s_dset_path, train_transform)
+    source_set = utils.ObjectImage('', args.s_dset_path, train_transform) # dataset
     target_set = utils.ObjectImage_mul('', args.t_dset_path, train_transform)
     test_set = utils.ObjectImage('', args.test_dset_path, test_transform)
 
@@ -97,8 +97,8 @@ def train(args, validate=False, label=None):
         dset_loaders = data_load_y(args, label)
     else:
         dset_loaders = data_load(args)
-    class_num = args.class_num
-    class_weight_src = torch.ones(class_num, ).cuda()
+    class_num = args.class_num # 65
+    class_weight_src = torch.ones(class_num, ).cuda() # 【65，】
     ##################################################################################################
 
     ## set base network
@@ -108,10 +108,10 @@ def train(args, validate=False, label=None):
         netG = utils.ResBase50().cuda()  
 
     netF = utils.ResClassifier(class_num=class_num, feature_dim=netG.in_features, 
-        bottleneck_dim=args.bottleneck_dim).cuda()
+        bottleneck_dim=args.bottleneck_dim).cuda() # hidden layer
 
     max_len = max(len(dset_loaders["source"]), len(dset_loaders["target"]))
-    args.max_iter = args.max_epoch * max_len
+    args.max_iter = args.max_epoch * max_len # batch_num*epoch
 
     ad_flag = False
     if args.method in {'DANN', 'DANNE'}:
@@ -130,12 +130,12 @@ def train(args, validate=False, label=None):
     base_network = nn.Sequential(netG, netF)
 
     if args.pl.startswith('atdoc_na'):
-        mem_fea = torch.rand(len(dset_loaders["target"].dataset), args.bottleneck_dim).cuda()
+        mem_fea = torch.rand(len(dset_loaders["target"].dataset), args.bottleneck_dim).cuda() # Dataset,H
         mem_fea = mem_fea / torch.norm(mem_fea, p=2, dim=1, keepdim=True)
-        mem_cls = torch.ones(len(dset_loaders["target"].dataset), class_num).cuda() / class_num
+        mem_cls = torch.ones(len(dset_loaders["target"].dataset), class_num).cuda() / class_num # dataset,C
 
     if args.pl == 'atdoc_nc':
-        mem_fea = torch.rand(args.class_num, args.bottleneck_dim).cuda()
+        mem_fea = torch.rand(args.class_num, args.bottleneck_dim).cuda() # mem中存储的就是类的向量,C,H
         mem_fea = mem_fea / torch.norm(mem_fea, p=2, dim=1, keepdim=True)
         
     source_loader_iter = iter(dset_loaders["source"])
@@ -168,13 +168,13 @@ def train(args, validate=False, label=None):
         if args.method == 'srconly' and args.pl == 'none':
             features_source, outputs_source = base_network(inputs_source)
         else:
-            features_source, outputs_source = base_network(inputs_source)
+            features_source, outputs_source = base_network(inputs_source) # B,H; B,C
             features_target, outputs_target = base_network(inputs_target)
             features = torch.cat((features_source, features_target), dim=0)
             outputs = torch.cat((outputs_source, outputs_target), dim=0)
             softmax_out = nn.Softmax(dim=1)(outputs)
 
-        eff = utils.calc_coeff(iter_num, max_iter=args.max_iter)
+        eff = utils.calc_coeff(iter_num, max_iter=args.max_iter) # 前后期对伪标签的置信度
         if args.method[-1] == 'E':
             entropy = loss.Entropy(softmax_out)
         else:
@@ -206,9 +206,9 @@ def train(args, validate=False, label=None):
         else:
             raise ValueError('Method cannot be recognized.')
 
-        src_ = loss.CrossEntropyLabelSmooth(reduction='none',num_classes=class_num, epsilon=args.smooth)(outputs_source, labels_source)
-        weight_src = class_weight_src[labels_source].unsqueeze(0)
-        classifier_loss = torch.sum(weight_src * src_) / (torch.sum(weight_src).item())
+        src_ = loss.CrossEntropyLabelSmooth(reduction='none',num_classes=class_num, epsilon=args.smooth)(outputs_source, labels_source) # B,1
+        weight_src = class_weight_src[labels_source].unsqueeze(0) # confidence weight,初始值都是1 # B,1
+        classifier_loss = torch.sum(weight_src * src_) / (torch.sum(weight_src).item()) # 这里源域样本没加权啊。
         total_loss = transfer_loss + classifier_loss
 
         eff = iter_num / args.max_iter
@@ -257,24 +257,25 @@ def train(args, validate=False, label=None):
 
         elif args.pl == 'atdoc_nc':
             mem_fea_norm = mem_fea / torch.norm(mem_fea, p=2, dim=1, keepdim=True)
-            dis = torch.mm(features_target.detach(), mem_fea_norm.t())
-            _, pred = torch.max(dis, dim=1)
-            classifier_loss = nn.CrossEntropyLoss()(outputs_target, pred) 
+            dis = torch.mm(features_target.detach(), mem_fea_norm.t()) # BH , HC，这里使用点积计算相似度直接获得B中每个sample的class
+            _, pred = torch.max(dis, dim=1) # B,C
+            classifier_loss = nn.CrossEntropyLoss()(outputs_target, pred) # 前面是伪标签，后面是按我们的思路形成的pred
             total_loss += args.tar_par * eff * classifier_loss
         
         elif args.pl.startswith('atdoc_na'):
 
-            dis = -torch.mm(features_target.detach(), mem_fea.t())
-            for di in range(dis.size(0)):
-                dis[di, idx[di]] = torch.max(dis)
-            _, p1 = torch.sort(dis, dim=1)
+            dis = -torch.mm(features_target.detach(), mem_fea.t()) #BH . H，Dataset -> B,Dataset,即Batch中每个样本和全局样本的相似性
 
-            w = torch.zeros(features_target.size(0), mem_fea.size(0)).cuda()
+            for di in range(dis.size(0)):
+                dis[di, idx[di]] = torch.max(dis) # 每一个该是label的地方都是最大值？
+            _, p1 = torch.sort(dis, dim=1) # p是indice
+
+            w = torch.zeros(features_target.size(0), mem_fea.size(0)).cuda() # B,Dataset
             for wi in range(w.size(0)):
                 for wj in range(args.K):
-                    w[wi][p1[wi, wj]] = 1/ args.K
+                    w[wi][p1[wi, wj]] = 1/ args.K # 每个sample关联性最大的那几个样本都是有值的，其他都是0
 
-            weight_, pred = torch.max(w.mm(mem_cls), 1)
+            weight_, pred = torch.max(w.mm(mem_cls), 1) # 用这些样本的class来形成我的class。
 
             if args.pl == 'atdoc_na_now':
                 classifier_loss = nn.CrossEntropyLoss()(outputs_target, pred) 
@@ -307,18 +308,18 @@ def train(args, validate=False, label=None):
             mem_fea[idx] = (1.0 - args.momentum) * mem_fea[idx] + args.momentum * features_target.clone()
             mem_cls[idx] = (1.0 - args.momentum) * mem_cls[idx] + args.momentum * outputs_target.clone()
 
-        if args.pl == 'atdoc_nc':
+        if args.pl == 'atdoc_nc': # 这里是非参数方法，更新mem，NC重点
             base_network.eval() 
             with torch.no_grad():
-                features_target, outputs_target = base_network(inputs_target)
+                features_target, outputs_target = base_network(inputs_target) # B,H
                 softmax_t = nn.Softmax(dim=1)(outputs_target)
-                _, pred_t = torch.max(softmax_t, 1)
-                onehot_t = torch.eye(args.class_num)[pred_t].cuda()
-                center_t = torch.mm(features_target.t(), onehot_t) / (onehot_t.sum(dim=0) + 1e-8)
+                _, pred_t = torch.max(softmax_t, 1) # B,1
+                onehot_t = torch.eye(args.class_num)[pred_t].cuda() # B,C
+                center_t = torch.mm(features_target.t(), onehot_t) / (onehot_t.sum(dim=0) + 1e-8) # H,C,这里用技巧简单获得Batch中每个类别的中心
 
-            mem_fea = (1.0 - args.momentum) * mem_fea + args.momentum * center_t.t().clone()
+            mem_fea = (1.0 - args.momentum) * mem_fea + args.momentum * center_t.t().clone() # C,H更新
 
-        if iter_num % int(args.eval_epoch*max_len) == 0:
+        if iter_num % int(args.eval_epoch*max_len) == 0: # 每10次就验证一次。
             base_network.eval()
             if args.dset == 'VISDA-C':
                 acc, py, score, y, tacc = utils.cal_acc_visda(dset_loaders["test"], base_network)
@@ -380,7 +381,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=0, help="random seed")
     parser.add_argument('--batch_size', type=int, default=36, help="batch_size")
     parser.add_argument('--worker', type=int, default=4, help="number of workers")
-    parser.add_argument('--bottleneck_dim', type=int, default=256)
+    parser.add_argument('--bottleneck_dim', type=int, default=256) # 这是个啥东西
 
     parser.add_argument('--max_epoch', type=int, default=30)
     parser.add_argument('--momentum', type=float, default=1.0)
@@ -427,16 +428,16 @@ if __name__ == "__main__":
 
     args.s_dset_path = './data/' + args.dset + '/' + names[args.s] + '_list.txt'
     args.t_dset_path = './data/' + args.dset + '/' + names[args.t] + '_list.txt'
-    args.test_dset_path = args.t_dset_path
+    args.test_dset_path = args.t_dset_path # 测试就是target域
 
     if args.pl == 'none':
         args.output_dir = osp.join(args.output, args.pl, args.dset, 
             names[args.s][0].upper() + names[args.t][0].upper())
     else:
         args.output_dir = osp.join(args.output, args.pl + '_' + str(args.tar_par), args.dset, 
-            names[args.s][0].upper() + names[args.t][0].upper())
+            names[args.s][0].upper() + names[args.t][0].upper()) # 输出地址
 
-    args.name = names[args.s][0].upper() + names[args.t][0].upper()
+    args.name = names[args.s][0].upper() + names[args.t][0].upper() # 源域目标域
     if not osp.exists(args.output_dir):
         os.system('mkdir -p ' + args.output_dir)
     if not osp.exists(args.output_dir):

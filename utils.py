@@ -307,6 +307,7 @@ def cal_fea(loader, model):
     return all_feas, all_label
 
 def cal_acc(loader, model, flag=True, fc=None):
+    """计算准确性指标"""
     start_test = True
     with torch.no_grad():
         iter_test = iter(loader)
@@ -324,8 +325,8 @@ def cal_acc(loader, model, flag=True, fc=None):
                 else:
                     outputs = model(inputs)
             if start_test:
-                all_output = outputs.float().cpu()
-                all_label = labels.float()
+                all_output = outputs.float().cpu() # B，H
+                all_label = labels.float() # B，1
                 start_test = False
             else:
                 all_output = torch.cat((all_output, outputs.float().cpu()), 0)
